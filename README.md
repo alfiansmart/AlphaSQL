@@ -1,12 +1,13 @@
 # AlphaSQL
 
-This repository hosts a minimal implementation of the
-[AlphaSQL](https://arxiv.org/abs/2502.17248) approach for natural language to SQL
-translation.  It integrates Azure OpenAI's `o3-mini` reasoning model and
-provides an optional **planning mode** where the model drafts a plan prior to
-producing the final SQL query. The implementation also includes an experimental
-Metropolis-Hastings refinement loop and ready-made database connectors for
-Postgres, Snowflake and StarRocks to execute generated SQL directly.
+The implementation of the ICML 2025 AlphaSQL approach for natural-language-to-SQL translation, adapted for Azure OpenAI's `o3-mini` model.
+
+This repository hosts a minimal yet end-to-end reproduction of the
+[AlphaSQL](https://arxiv.org/abs/2502.17248) system. It integrates Azure OpenAI's
+reasoning models, provides an optional **planning mode** where the model drafts a
+plan prior to emitting SQL, includes an experimental Metropolis-Hastings
+(MCMC) refinement loop, and supplies database connectors for Postgres,
+Snowflake, and StarRocks so generated SQL can be executed directly.
 
 ## Installation
 
@@ -19,6 +20,12 @@ Set the Azure OpenAI credentials in your environment:
 ```bash
 export AZURE_OPENAI_KEY="<your-key>"
 export AZURE_OPENAI_ENDPOINT="https://<your-endpoint>.openai.azure.com/"
+```
+
+Optional database drivers (install the ones you need):
+
+```bash
+pip install psycopg[binary] snowflake-connector-python starrocksdb mysql-connector-python
 ```
 
 ## Example
