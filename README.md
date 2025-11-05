@@ -1,113 +1,82 @@
 # AlphaSQL
 
-AlphaSQL is a lightweight research toolkit that combines a flexible
-Metropolis-Hastings Markov Chain Monte Carlo (MCMC) engine with utilities for
-exploring SQL query spaces against PostgreSQL or Snowflake backends. The goal
-is to make it easy to prototype adaptive SQL systems that search over query
-templates while learning from database feedback.
+The implementation of the ICML 2025 AlphaSQL approach for natural-language-to-SQL translation, adapted for Azure OpenAI's `o3-mini` model.
 
-## Features
-
-* **Generic MCMC sampler** – drive any scoring function that returns a scalar
-  value for a SQL query.
-* **Template-aware SQL proposals** – mutate `SELECT` statements by swapping
-  tables, columns, predicates, limits, ordering clauses, and `DISTINCT` usage.
-* **Database connectivity** – simple helpers for connecting to PostgreSQL
-  (via `psycopg`/`psycopg2`) or Snowflake using environment variables or
-  explicit configuration objects.
-* **Pluggable evaluation** – run queries, fetch results, and score them with a
-  Python callback.
+This repository hosts a minimal yet end-to-end reproduction of the
+[AlphaSQL](https://arxiv.org/abs/2502.17248) system. It integrates Azure OpenAI's
+reasoning models, provides an optional **planning mode** where the model drafts a
+plan prior to emitting SQL, includes an experimental Metropolis-Hastings
+(MCMC) refinement loop, and supplies database connectors for Postgres,
+Snowflake, and StarRocks so generated SQL can be executed directly.
 
 ## Installation
 
-AlphaSQL is a pure Python package. Install it alongside the database drivers
-required for your target backend:
-
 ```bash
-pip install psycopg psycopg2-binary snowflake-connector-python
+pip install openai
 ```
 
-Only the drivers you need must be installed. The package itself has no third
-party runtime dependencies beyond the standard library.
+Set the Azure OpenAI credentials in your environment:
 
-Clone this repository and make it importable (either by installing it in a
-virtual environment or by adding the repository root to your `PYTHONPATH`).
+```bash
+export AZURE_OPENAI_KEY="<your-key>"
+export AZURE_OPENAI_ENDPOINT="https://<your-endpoint>.openai.azure.com/"
+```
 
-## Configuration
+Optional database drivers (install the ones you need):
 
-### Environment variables
+```bash
+pip install psycopg[binary] snowflake-connector-python starrocksdb mysql-connector-python
+```
 
-The `DatabaseConnector.from_environment` helper reads configuration from
-environment variables with the `ALPHASQL_` prefix. The most common options are:
-
-| Variable | Description |
-| -------- | ----------- |
-| `ALPHASQL_HOST` / `ALPHASQL_PORT` | Database host/port (PostgreSQL). |
-| `ALPHASQL_DATABASE` | Database name (both backends). |
-| `ALPHASQL_USER` / `ALPHASQL_PASSWORD` | Authentication credentials. |
-| `ALPHASQL_ACCOUNT` | Snowflake account identifier. |
-| `ALPHASQL_WAREHOUSE` | Snowflake warehouse. |
-| `ALPHASQL_ROLE` / `ALPHASQL_SCHEMA` | Optional Snowflake role/schema. |
-| `ALPHASQL_DSN` | PostgreSQL connection string (optional alternative to host/port). |
-| `ALPHASQL_TIMEOUT` | Connection timeout in seconds. |
-| `ALPHASQL_KEEPALIVE` | PostgreSQL TCP keepalive idle seconds. |
-| `ALPHASQL_PARAMS` | Extra parameters formatted as comma-separated `key=value` pairs. |
-
-Set the variables appropriate for either PostgreSQL or Snowflake before running
-the sampler or supply equivalent values programmatically through
-`ConnectionConfig`.
-
-### Manual configuration
-
-Alternatively, instantiate a `ConnectionConfig` and pass it to
-`DatabaseConnector`:
+## Example
 
 ```python
-from alphasql import ConnectionConfig, DatabaseConnector, DatabaseType
+from alphasql import AlphaSQLEngine, PostgresConnector
 
-config = ConnectionConfig(
-    database_type=DatabaseType.POSTGRES,
-    host="localhost",
-    port=5432,
-    database="analytics",
-    user="researcher",
-    password="secret",
+engine = AlphaSQLEngine()
+schema = "table users(id, name, registered_at)"
+sql = engine.generate_sql(
+    "How many users registered in 2023?",
+    schema,
+    planning=True,
+    mcmc_steps=8,
 )
-connector = DatabaseConnector(config)
-connection = connector.connect()
+print(sql)
+
+connector = PostgresConnector()  # reads POSTGRES_DSN from the environment
+try:
+    result = engine.execute(
+        "How many users registered in 2023?",
+        schema,
+        connector=connector,
+        mcmc_steps=8,
+    )
+    print(result["rows"])
+finally:
+    connector.close()
 ```
 
-## Running the sampler
+The engine first creates a plan (enabled by default) and then generates SQL.
+When MCMC steps are requested the model iteratively proposes refinements and
+accepts them according to a Metropolis-Hastings acceptance rule. The connectors
+wrap existing database client libraries and expect credentials to be available
+through environment variables.
 
-An end-to-end example is provided in `examples/run_sampler.py`.
+### CLI usage
 
 ```bash
-python examples/run_sampler.py --iterations 200 --burn-in 20 --backend postgres
+python -m alphasql.cli "How many users registered in 2023?" "table users(id, name, registered_at)" --mcmc-steps 8
 ```
 
-By default the script expects valid database credentials via environment
-variables. For local experimentation without a running database, enable the
-in-memory evaluator:
+Use `--no-plan` to skip planning. Provide `--db-target postgres|snowflake|starrocks`
+to execute queries using environment-provided credentials. Required variables:
 
-```bash
-python examples/run_sampler.py --dry-run
-```
+| Target | Required variables |
+| --- | --- |
+| `postgres` | `POSTGRES_DSN` or keyword parameters supported by `psycopg`/`psycopg2` |
+| `snowflake` | `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_ACCOUNT`, optionally `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
+| `starrocks` | `STARROCKS_HOST`, `STARROCKS_USER`, `STARROCKS_PASSWORD`, optionally `STARROCKS_PORT`, `STARROCKS_DATABASE` |
 
-The script prints the best query discovered, its score, and basic diagnostics
-for the Markov chain.
-
-## Using AlphaSQL in your project
-
-1. Define a scoring callback that accepts the rows returned by a query and any
-   metadata you wish to track, returning a floating point score.
-2. Instantiate `QueryEvaluator` with either a real database connection or a
-   mocked connection for offline experimentation.
-3. Create a `SQLMutationProposal` describing the tables, columns, filters, and
-   limits you want the sampler to explore.
-4. Configure `MCMCConfig` with the desired number of iterations, burn-in, and
-   random seed.
-5. Run `MCMCSampler.run(initial_query, metadata=initial_metadata)` and consume
-   the resulting trace or the best state.
-
-The library is intentionally modular—swap in your own proposal distribution,
-database connection management, or evaluation strategy as needed.
+Ensure you have installed the relevant database drivers (`psycopg` or
+`psycopg2`, `snowflake-connector-python`, `starrocksdb` or
+`mysql-connector-python`).
